@@ -67,6 +67,8 @@ const styles = stylex.create({
     width: '100%',
     padding: 8,
     background: 'linear-gradient(#00000000, #000000ff)',
+    display: 'flex',
+    gap: '8px',
   },
   controlButton: {
     color: 'white',

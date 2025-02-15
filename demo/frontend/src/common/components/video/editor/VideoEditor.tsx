@@ -16,13 +16,31 @@
 import {VideoData} from '@/demo/atoms';
 import stylex, {StyleXStyles} from '@stylexjs/stylex';
 import {useSetAtom} from 'jotai';
-import {PropsWithChildren, RefObject, useEffect, useRef} from 'react';
+import {PropsWithChildren, RefObject, useEffect, useRef, useState} from 'react';
 import Video, {VideoRef} from '../Video';
 import {videoAtom} from './atoms';
+import {Button} from 'react-daisyui';
+import {Rotate} from '@carbon/icons-react';
 
 const MAX_VIDEO_WIDTH = 1280;
 
 const styles = stylex.create({
+  leftControls: {
+    position: 'absolute',
+    left: 16,
+    top: '50%',
+    transform: 'translateY(-50%)',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '8px',
+    background: 'rgba(0, 0, 0, 0.5)',
+    padding: '8px',
+    borderRadius: '8px',
+    zIndex: 10,
+  },
+  controlButton: {
+    color: 'white',
+  },
   editorContainer: {
     position: 'relative',
     display: 'flex',
@@ -84,6 +102,63 @@ type Props = PropsWithChildren<{
   loading?: boolean;
 }>;
 
+function RotateButton({videoRef, videoUrl}: {videoRef: RefObject<VideoRef>, videoUrl: string}) {
+  const [isRotating, setIsRotating] = useState(false);
+
+  const handleRotate = async () => {
+    if (isRotating || !videoRef.current) return;
+    setIsRotating(true);
+    
+    try {
+      // URLからファイル名を抽出
+      const fileName = videoUrl.split('/').pop();
+      if (!fileName) {
+        throw new Error('Invalid video URL');
+      }
+      
+      console.log('Rotating video:', fileName);
+      
+      const response = await fetch('http://localhost:7263/api/rotate_video', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          path: fileName,
+        }),
+      });
+
+      const result = await response.json();
+      console.log('Rotate video response:', result);
+      
+      if (result.path) {
+        const newSrc = result.path;
+        window.location.href = `/?video=${encodeURIComponent(newSrc)}`;
+      }
+    } catch (error) {
+      console.error('Failed to rotate video:', error);
+      alert('動画の回転に失敗しました。詳細はコンソールを確認してください。');
+    } finally {
+      setIsRotating(false);
+    }
+  };
+
+  return (
+    <Button
+      color="ghost"
+      size="md"
+      disabled={isRotating}
+      startIcon={
+        <Rotate
+          {...stylex.props(styles.controlButton)}
+          size={24}
+        />
+      }
+      onClick={handleRotate}
+    />
+  );
+}
+
 export default function VideoEditor({
   video: inputVideo,
   layers,
@@ -104,6 +179,9 @@ export default function VideoEditor({
   return (
     <div {...stylex.props(styles.editorContainer)}>
       <div {...stylex.props(styles.videoContainer)}>
+        <div {...stylex.props(styles.leftControls)}>
+          <RotateButton videoRef={videoRef} videoUrl={inputVideo.url} />
+        </div>
         <Video
           ref={videoRef}
           src={inputVideo.url}

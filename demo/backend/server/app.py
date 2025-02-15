@@ -9,6 +9,8 @@ import logging
 import os
 import subprocess
 import uuid
+import hashlib
+import shutil
 from typing import Any, Generator
 
 from app_conf import (
@@ -22,6 +24,7 @@ from app_conf import (
 from data.loader import preload_data
 from data.schema import schema
 from data.store import set_videos
+from data.transcoder import rotate_video
 from flask import Flask, make_response, Request, request, Response, send_from_directory
 from flask_cors import CORS
 from inference.data_types import PropagateDataResponse, PropagateInVideoRequest
@@ -345,6 +348,41 @@ def get_sas():
 
 
 # 新規追加: コンテナ作成をフロントではなくバックエンドで行うエンドポイント
+@app.route("/api/rotate_video", methods=["POST"])
+def handle_rotate_video():
+    try:
+        data = request.json
+        print("[DEBUG] Rotate video request:", data)
+        
+        if not data or 'path' not in data:
+            return make_response("No 'path' found in request", 400)
+
+        # パスの検証
+        if '/' in data["path"] or '\\' in data["path"]:
+            return make_response("Invalid path", 400)
+
+        video_path = os.path.join(UPLOADS_PATH, data["path"])
+        if not os.path.exists(video_path):
+            return make_response(f"Video file not found: {data['path']}", 404)
+        print("[DEBUG] Full video path:", video_path)
+        rotated_path, temp_dir = rotate_video(video_path)
+        
+        # 回転後の動画をuploadsディレクトリに移動
+        with open(rotated_path, 'rb') as f:
+            file_hash = hashlib.sha256(f.read()).hexdigest()
+        new_path = os.path.join(UPLOADS_PATH, f"{file_hash}.mp4")
+        shutil.move(rotated_path, new_path)
+        
+        # 一時ディレクトリを削除
+        shutil.rmtree(temp_dir)
+        
+        # アップロードディレクトリからの相対パスを返す
+        relative_path = os.path.relpath(new_path, UPLOADS_PATH)
+        return make_response({"path": relative_path}, 200)
+    except Exception as e:
+        logger.exception("An error occurred in rotate_video")
+        return make_response(f"error: {str(e)}", 500)
+
 @app.route("/create_container_if_not_exists", methods=["POST"])
 def create_container_if_not_exists():
     connection_str = os.environ.get("VITE_AZURE_STORAGE_CONNECTION_STRING") or os.environ.get("AZURE_STORAGE_CONNECTION_STRING")

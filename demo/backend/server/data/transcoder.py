@@ -8,8 +8,9 @@ import math
 import os
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Tuple
 
 import av
 from app_conf import FFMPEG_NUM_THREADS
@@ -112,6 +113,47 @@ def get_video_metadata(path: str) -> VideoMetadata:
             num_video_frames=num_video_frames,
         )
 
+
+def rotate_video(in_path: str) -> Tuple[str, str]:
+    """
+    動画を90度回転させる
+    
+    Args:
+        in_path: 入力動画のパス
+        
+    Returns:
+        Tuple[str, str]: (回転後の動画パス, 一時ディレクトリパス)
+    """
+    # 一時ディレクトリを作成
+    temp_dir = tempfile.mkdtemp()
+    out_path = os.path.join(temp_dir, "rotated_" + os.path.basename(in_path))
+    
+    ffmpeg = shutil.which("ffmpeg")
+    cmd = [
+        ffmpeg,
+        "-threads",
+        f"{FFMPEG_NUM_THREADS}",
+        "-i",
+        in_path,
+        "-vf",
+        "transpose=1",  # 90度時計回りに回転
+        "-c:v",
+        "libx264",
+        "-crf",
+        "23",
+        "-c:a",
+        "copy",  # 音声はそのままコピー
+        out_path,
+        "-y",
+    ]
+    
+    subprocess.call(
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    
+    return out_path, temp_dir
 
 def normalize_video(
     in_path: str,

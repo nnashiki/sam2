@@ -36,9 +36,17 @@ from data.data_types import (
     StartSessionInput,
     Video,
 )
+
+@strawberry.input
+class RotateVideoInput:
+    path: str
+
+@strawberry.type
+class RotateVideoResponse:
+    path: str
 from data.loader import get_video
 from data.store import get_videos
-from data.transcoder import get_video_metadata, transcode, VideoMetadata
+from data.transcoder import get_video_metadata, transcode, VideoMetadata, rotate_video
 from inference.data_types import (
     AddPointsRequest,
     CancelPropagateInVideoRequest,
@@ -254,6 +262,26 @@ class Mutation:
         )
         response = inference_api.cancel_propagate_in_video(request)
         return CancelPropagateInVideo(success=response.success)
+
+    @strawberry.mutation
+    def rotate_video(self, input: RotateVideoInput) -> RotateVideoResponse:
+        """
+        動画を90度回転させる
+        """
+        video_path = os.path.join(DATA_PATH, input.path)
+        rotated_path, temp_dir = rotate_video(video_path)
+        
+        # 回転後の動画を uploads ディレクトリに移動
+        file_hash = get_file_hash(rotated_path)
+        new_path = os.path.join(UPLOADS_PATH, f"{file_hash}.mp4")
+        shutil.move(rotated_path, new_path)
+        
+        # 一時ディレクトリを削除
+        shutil.rmtree(temp_dir)
+        
+        # アップロードディレクトリからの相対パスを返す
+        relative_path = os.path.relpath(new_path, UPLOADS_PATH)
+        return RotateVideoResponse(path=relative_path)
 
 
 def get_file_hash(video_path_or_file) -> str:
