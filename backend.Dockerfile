@@ -30,7 +30,7 @@ COPY README.md .
 
 RUN pip install --upgrade pip setuptools
 RUN pip install -e ".[interactive-demo]"
-RUN pip install azure-storage-blob
+RUN pip install azure-storage-blob debugpy
 
 # https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite/issues/69#issuecomment-1826764707
 RUN mkdir -p /opt/conda/bin && rm -f /opt/conda/bin/ffmpeg && ln -s /bin/ffmpeg /opt/conda/bin/ffmpeg
@@ -53,13 +53,4 @@ ADD https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.
 
 WORKDIR ${APP_ROOT}/server
 
-# https://pythonspeed.com/articles/gunicorn-in-docker/
-CMD gunicorn --worker-tmp-dir /dev/shm \
-    --worker-class gthread app:app \
-    --log-level info \
-    --access-logfile /dev/stdout \
-    --log-file /dev/stderr \
-    --workers ${GUNICORN_WORKERS} \
-    --threads ${GUNICORN_THREADS} \
-    --bind 0.0.0.0:${GUNICORN_PORT} \
-    --timeout 60
+CMD ["python", "-m", "debugpy", "--listen", "0.0.0.0:5678", "--wait-for-client", "app.py"]

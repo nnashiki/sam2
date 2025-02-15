@@ -40,6 +40,7 @@ services:
       dockerfile: backend.Dockerfile
     ports:
       - 7263:5000
+      - "5678:5678"
     volumes:
       - ./demo/data/:/data/:rw
     environment:
