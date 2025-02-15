@@ -1,0 +1,20 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "chrome",
+      "request": "launch",
+      "preLaunchTask": "docker-run-frontend",
+      "name": "Debug Frontend (TypeScript)",
+      "url": "http://localhost:7262",
+      "port": 9229,
+      "webRoot": "${workspaceFolder}/demo/frontend",
+      "sourceMaps": true,
+      "sourceMapPathOverrides": {
+        "/@fs/*": "${webRoot}/*",
+        "webpack:///./~/*": "${webRoot}/node_modules/*",
+        "webpack:///./src/*": "${webRoot}/src/*"
+      }
+    }
+  ]
+}
