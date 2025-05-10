@@ -1,18 +1,20 @@
+
 /**
  * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+import { AudioTrackData, DecodedVideo } from '@/common/codecs/VideoDecoder';
 import {EffectIndex, Effects} from '@/common/components/video/effects/Effects';
 import {registerSerializableConstructors} from '@/common/error/ErrorSerializationUtils';
 import {
@@ -71,6 +73,7 @@ export type DecodeEvent = {
   width: number;
   height: number;
   done: boolean;
+  audioTrack?: AudioTrackData;
 };
 
 export type LoadStartEvent = unknown;
@@ -86,9 +89,10 @@ export type EncodingStateUpdateEvent = {
   progress: number;
 };
 
-export type EncodingCompletedEvent = {
-  file: MP4ArrayBuffer;
-};
+// Blobに変更
+export interface EncodingCompletedEvent {
+  file: Blob;
+}
 
 export interface PlayEvent {}
 
@@ -185,6 +189,11 @@ export default class VideoWorkerBridge extends EventEmitter<VideoWorkerEventMap>
   protected worker: Worker;
   private metadata: Metadata | null = null;
   private frameIndex: number = 0;
+  private _decodedVideo: DecodedVideo | null = null;
+
+  public get decodedVideo() {
+    return this._decodedVideo;
+  }
 
   private _sessionId: string | null = null;
 
@@ -228,6 +237,45 @@ export default class VideoWorkerBridge extends EventEmitter<VideoWorkerEventMap>
             break;
           case 'decode':
             this.metadata = event.data;
+            if (event.data.done) {
+              console.log('[VideoWorkerBridge] Received decode event:', {
+                data: event.data,
+                hasAudioTrack: !!event.data.audioTrack,
+                audioTrackDetails: event.data.audioTrack ? {
+                  codec: event.data.audioTrack.codec,
+                  samplesCount: event.data.audioTrack.samples?.length,
+                  timescale: event.data.audioTrack.timescale,
+                  firstSample: event.data.audioTrack.samples?.[0] ? {
+                    size: event.data.audioTrack.samples[0].data.byteLength,
+                    duration: event.data.audioTrack.samples[0].duration,
+                    is_sync: event.data.audioTrack.samples[0].is_sync
+                  } : null
+                } : null
+              });
+
+              this._decodedVideo = {
+                width: event.data.width,
+                height: event.data.height,
+                frames: [],  // フレームはWorker側で管理
+                numFrames: event.data.totalFrames,
+                fps: event.data.fps,
+                audioTrack: event.data.audioTrack
+              };
+
+              console.log('[VideoWorkerBridge] Decoded video updated:', {
+                hasAudioTrack: !!this._decodedVideo.audioTrack,
+                audioTrackDetails: this._decodedVideo.audioTrack ? {
+                  codec: this._decodedVideo.audioTrack.codec,
+                  samplesCount: this._decodedVideo.audioTrack.samples?.length,
+                  timescale: this._decodedVideo.audioTrack.timescale,
+                  firstSample: this._decodedVideo.audioTrack.samples?.[0] ? {
+                    size: this._decodedVideo.audioTrack.samples[0].data.byteLength,
+                    duration: this._decodedVideo.audioTrack.samples[0].duration,
+                    is_sync: this._decodedVideo.audioTrack.samples[0].is_sync
+                  } : null
+                } : null
+              });
+            }
             break;
           case 'frameUpdate':
             this.frameIndex = event.data.index;
@@ -323,8 +371,24 @@ export default class VideoWorkerBridge extends EventEmitter<VideoWorkerEventMap>
     });
   }
 
-  encode(): void {
-    this.sendRequest<EncodeVideoRequest>('encode');
+  encode(audioTrack?: AudioTrackData): void {
+    const audioTrackToUse = audioTrack || this._decodedVideo?.audioTrack;
+    console.log('[VideoWorkerBridge] Encoding with audio track:', {
+      hasAudioTrack: !!audioTrackToUse,
+      audioTrackDetails: audioTrackToUse ? {
+        codec: audioTrackToUse.codec,
+        samplesCount: audioTrackToUse.samples?.length,
+        timescale: audioTrackToUse.timescale,
+        firstSample: audioTrackToUse.samples?.[0] ? {
+          size: audioTrackToUse.samples[0].data.byteLength,
+          duration: audioTrackToUse.samples[0].duration,
+          is_sync: audioTrackToUse.samples[0].is_sync
+        } : null
+      } : null
+    });
+    this.sendRequest<EncodeVideoRequest>('encode', {
+      audioTrack: audioTrackToUse,
+    });
   }
 
   initializeTracker(name: keyof Trackers, options: TrackerOptions): void {
@@ -337,9 +401,7 @@ export default class VideoWorkerBridge extends EventEmitter<VideoWorkerEventMap>
   startSession(videoUrl: string): Promise<string | null> {
     return new Promise(resolve => {
       const handleResponse = (
-        event: MessageEvent<
-          SessionStartedResponse | SessionStartFailedResponse
-        >,
+        event: MessageEvent<SessionStartedResponse | SessionStartFailedResponse>,
       ) => {
         if (event.data.action === 'sessionStarted') {
           this.worker.removeEventListener('message', handleResponse);
@@ -493,33 +555,4 @@ export default class VideoWorkerBridge extends EventEmitter<VideoWorkerEventMap>
       },
     );
   }
-
-  // // Override EventEmitter
-
-  // addEventListener<K extends keyof WorkerEventMap>(
-  //   type: K,
-  //   listener: (ev: WorkerEventMap[K]) => unknown,
-  // ): void {
-  //   switch (type) {
-  //     case 'frameUpdate':
-  //       {
-  //         const event: FrameUpdateEvent = {
-  //           index: this.frameIndex,
-  //         };
-  //         // @ts-expect-error Incorrect typing. Not sure how to correctly type it
-  //         listener(event);
-  //       }
-  //       break;
-  //     case 'sessionStarted': {
-  //       if (this.sessionId !== null) {
-  //         const event: SessionStartedEvent = {
-  //           sessionId: this.sessionId,
-  //         };
-  //         // @ts-expect-error Incorrect typing. Not sure how to correctly type it
-  //         listener(event);
-  //       }
-  //     }
-  //   }
-  //   super.addEventListener(type, listener);
-  // }
 }

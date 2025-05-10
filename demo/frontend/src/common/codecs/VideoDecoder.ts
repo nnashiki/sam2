@@ -23,12 +23,24 @@ import {
   MP4Sample,
   MP4VideoTrack,
 } from 'mp4box';
-import {isAndroid, isChrome, isEdge, isWindows} from 'react-device-detect';
+// Simple browser detection
+const ua = navigator.userAgent;
+const isChrome = /Chrome/.test(ua);
+const isEdge = /Edg/.test(ua);
+const isWindows = /Windows/.test(ua);
+const isAndroid = /Android/.test(ua);
 
 export type ImageFrame = {
   bitmap: VideoFrame;
   timestamp: number;
   duration: number;
+};
+
+export type AudioTrackData = {
+  samples: MP4Sample[];
+  timescale: number;
+  duration: number;
+  codec: string;
 };
 
 export type DecodedVideo = {
@@ -37,6 +49,7 @@ export type DecodedVideo = {
   frames: ImageFrame[];
   numFrames: number;
   fps: number;
+  audioTrack?: AudioTrackData;
 };
 
 function decodeInternal(
@@ -47,6 +60,12 @@ function decodeInternal(
   return new Promise((resolve, reject) => {
     const imageFrames: ImageFrame[] = [];
     const globalSamples: MP4Sample[] = [];
+    let audioTrackData: AudioTrackData | undefined;
+    let audioSamplesCollected = false;
+    let audioSamplesPromiseResolve: (() => void) | null = null;
+    const audioSamplesPromise = new Promise<void>(resolve => {
+      audioSamplesPromiseResolve = resolve;
+    });
 
     let decoder: VideoDecoder;
 
@@ -55,8 +74,97 @@ function decodeInternal(
 
     mp4File.onError = reject;
     mp4File.onReady = async info => {
+      // ビデオトラック処理
       if (info.videoTracks.length > 0) {
         track = info.videoTracks[0];
+      
+      // 音声トラック処理
+      if (info.audioTracks && info.audioTracks.length > 0) {
+        const audioTrack = info.audioTracks[0];
+        console.log('[AudioTrack] Found track:', {
+          id: audioTrack.id,
+          codec: audioTrack.codec,
+          timescale: audioTrack.timescale,
+          duration: audioTrack.duration,
+          sampleSize: audioTrack.sample_size,
+          channelCount: audioTrack.channel_count,
+          sampleRate: audioTrack.sample_rate,
+          bitDepth: audioTrack.audio.bitDepth
+        });
+
+        const audioSamples: MP4Sample[] = [];
+        
+        mp4File.setExtractionOptions(audioTrack.id, null, {
+          nbSamples: Infinity,
+        });
+        
+        // 音声サンプル用の新しいハンドラを設定
+        const videoSamplesHandler = mp4File.onSamples;
+        mp4File.onSamples = (id, user, samples) => {
+          if (id === audioTrack.id) {
+            console.log('[AudioTrack] Received samples:', {
+              count: samples.length,
+              totalDuration: samples.reduce((sum, s) => sum + s.duration, 0),
+              firstSample: samples[0] ? {
+                size: samples[0].data.byteLength,
+                duration: samples[0].duration,
+                dts: samples[0].dts,
+                cts: samples[0].cts,
+                is_sync: samples[0].is_sync,
+                timescale: samples[0].timescale
+              } : null,
+              lastSample: samples[samples.length - 1] ? {
+                size: samples[samples.length - 1].data.byteLength,
+                duration: samples[samples.length - 1].duration,
+                dts: samples[samples.length - 1].dts,
+                cts: samples[samples.length - 1].cts,
+                is_sync: samples[samples.length - 1].is_sync,
+                timescale: samples[samples.length - 1].timescale
+              } : null
+            });
+            audioSamples.push(...samples);
+            if (samples.length > 0) {
+              audioSamplesCollected = true;
+              audioSamplesPromiseResolve?.();
+            }
+          } else if (videoSamplesHandler) {
+            videoSamplesHandler(id, user, samples);
+          }
+        };
+
+        // 音声トラック情報を保持
+        audioTrackData = {
+          samples: audioSamples,
+          timescale: audioTrack.timescale,
+          duration: audioTrack.duration,
+          codec: audioTrack.codec
+        };
+        console.log('[AudioTrack] Extracted:', {
+          codec: audioTrack.codec,
+          timescale: audioTrack.timescale,
+          duration: audioTrack.duration,
+          samplesCount: audioSamples.length,
+          totalDuration: audioSamples.reduce((sum, s) => sum + s.duration, 0),
+          averageDuration: audioSamples.reduce((sum, s) => sum + s.duration, 0) / audioSamples.length
+        });
+
+          // onProgressとresolveを拡張して音声トラック情報を含める
+          const originalOnProgress = onProgress;
+          onProgress = (video: DecodedVideo) => {
+            originalOnProgress({
+              ...video,
+              audioTrack: audioTrackData
+            });
+          };
+
+          const originalResolve = resolve;
+          resolve = ((video: DecodedVideo) => {
+            originalResolve({
+              ...video,
+              audioTrack: audioTrackData
+            });
+          }) as typeof resolve;
+        }
       } else {
         // The video does not have a video track, so looking if there is an
         // "otherTracks" available. Note, I couldn't find any documentation
@@ -126,24 +234,25 @@ function decodeInternal(
           const sample = globalSamples[frame_n];
           if (sample != null) {
             const duration = (sample.duration * 1_000_000) / sample.timescale;
-            imageFrames.push({
+            // Store frames in order by their frame number
+            imageFrames[frame_n] = {
               bitmap: inputFrame,
               timestamp: inputFrame.timestamp,
               duration,
-            });
-            // Sort frames in order of timestamp. This is needed because Safari
-            // can return decoded frames out of order.
-            imageFrames.sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1));
-            // Update progress on first frame and then every 40th frame
-            if (onProgress != null && frame_n % 100 === 0) {
+            };
+            // Update progress very frequently to show more immediate feedback
+            if (onProgress != null && frame_n % 2 === 0) {
+              // Filter out any undefined frames (not yet received)
+              const validFrames = imageFrames.filter(frame => frame !== undefined);
               onProgress({
                 width: saveTrack.track_width,
                 height: saveTrack.track_height,
-                frames: imageFrames,
+                frames: validFrames,
                 numFrames: saveTrack.nb_samples,
                 fps:
                   (saveTrack.nb_samples / saveTrack.duration) *
                   saveTrack.timescale,
+                audioTrack: audioTrackData,
               });
             }
           }
@@ -153,6 +262,11 @@ function decodeInternal(
             // Sort frames in order of timestamp. This is needed because Safari
             // can return decoded frames out of order.
             imageFrames.sort((a, b) => (a.timestamp > b.timestamp ? 1 : -1));
+            decoder.close();
+            // 音声サンプルの収集を待ってからresolve
+            if (audioTrackData && !audioSamplesCollected) {
+              await audioSamplesPromise;
+            }
             resolve({
               width: saveTrack.track_width,
               height: saveTrack.track_height,
@@ -161,6 +275,7 @@ function decodeInternal(
               fps:
                 (saveTrack.nb_samples / saveTrack.duration) *
                 saveTrack.timescale,
+              audioTrack: audioTrackData,
             });
           }
         },
@@ -220,19 +335,24 @@ function decodeInternal(
       _user: unknown,
       samples: MP4Sample[],
     ) => {
-      for (const sample of samples) {
-        globalSamples.push(sample);
-        decoder.decode(
-          new EncodedVideoChunk({
+      try {
+        // Process samples sequentially to maintain frame order
+        for (const sample of samples) {
+          globalSamples.push(sample);
+          const chunk = new EncodedVideoChunk({
             type: sample.is_sync ? 'key' : 'delta',
             timestamp: (sample.cts * 1_000_000) / sample.timescale,
             duration: (sample.duration * 1_000_000) / sample.timescale,
             data: sample.data,
-          }),
-        );
+          });
+          decoder.decode(chunk);
+          // Add a longer delay between frames to prevent decoder overload
+          await new Promise(resolve => setTimeout(resolve, 20));
+        }
+        await decoder.flush();
+      } catch (error) {
+        reject(error);
       }
-      await decoder.flush();
-      decoder.close();
     };
 
     onReady(mp4File);
@@ -269,14 +389,37 @@ export function decodeStream(
     'stream',
     async (mp4File: MP4File) => {
       let part = await fileStream.next();
+      let pendingChunks: { start: number; buffer: MP4ArrayBuffer }[] = [];
+      let nextExpectedStart = 0;
+      
+      // Process chunks as they arrive
       while (part.done === false) {
         const result = part.value.data.buffer as MP4ArrayBuffer;
         if (result != null) {
-          result.fileStart = part.value.range.start;
-          mp4File.appendBuffer(result);
+          const start = part.value.range.start;
+          pendingChunks.push({ start, buffer: result });
+          pendingChunks.sort((a, b) => a.start - b.start);
+
+          // Process any chunks that are ready (in sequence)
+          while (pendingChunks.length > 0 && pendingChunks[0].start === nextExpectedStart) {
+            const chunk = pendingChunks.shift()!;
+            chunk.buffer.fileStart = chunk.start;
+            mp4File.appendBuffer(chunk.buffer);
+            mp4File.flush();
+            nextExpectedStart = chunk.start + chunk.buffer.byteLength;
+            // Add longer delay to prevent overwhelming the decoder
+            await new Promise(resolve => setTimeout(resolve, 20));
+          }
         }
-        mp4File.flush();
         part = await fileStream.next();
+      }
+
+      // Process any remaining chunks
+      for (const chunk of pendingChunks) {
+        chunk.buffer.fileStart = chunk.start;
+        mp4File.appendBuffer(chunk.buffer);
+        mp4File.flush();
+        await new Promise(resolve => setTimeout(resolve, 20));
       }
     },
     onProgress,
